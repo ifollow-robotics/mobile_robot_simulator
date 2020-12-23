@@ -45,11 +45,15 @@
   <build_depend>roscpp</build_depend>
   <build_depend>tf</build_depend>
   <build_depend>sensor_msgs</build_depend>
+  <build_depend>laser_geometry</build_depend>
   <run_depend>geometry_msgs</run_depend>
   <run_depend>nav_msgs</run_depend>
   <run_depend>roscpp</run_depend>
   <run_depend>tf</run_depend>
   <run_depend>sensor_msgs</run_depend>
+  <run_depend>icp_on_particles</run_depend>
+  <run_depend>laser_geometry</run_depend>
+  <build_depend>icp_on_particles</build_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->

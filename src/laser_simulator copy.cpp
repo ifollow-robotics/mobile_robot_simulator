@@ -7,52 +7,16 @@ LaserScannerSimulator::LaserScannerSimulator(ros::NodeHandle *nh)
     nh_ptr = nh;
     // get parameters
     get_params();
-
-    // Scan publisher
     laser_pub = nh_ptr->advertise<sensor_msgs::LaserScan>(l_scan_topic,10); // scan publisher
-    pcl_pub = nh_ptr->advertise<sensor_msgs::PointCloud2>(l_pcl_topic,10);
-
-    // Map Subscriber
     map_sub = nh_ptr->subscribe(l_map_topic, 10, &LaserScannerSimulator::mapCallback,this);
-
-    // Scan subscriber 
-    real_scan_sub = nh_ptr->subscribe(l_real_scan_topic, 10, &LaserScannerSimulator::realScanCallback,this);
-
-    // Particles' pose to pointcloud service
-    scan_particles_srv = nh_ptr->advertiseService("/particles_scan_simulation", &LaserScannerSimulator::ComputeParticleScan,this);
+    // get map
+    // get_map();
     ROS_INFO("Initialized laser scanner simulator");
 }
 
-bool LaserScannerSimulator::ComputeParticleScan(icp_on_particles::ScanSimulation::Request &req, icp_on_particles::ScanSimulation::Response &res)
+LaserScannerSimulator::~LaserScannerSimulator()
 {
-    ROS_INFO("Received scan simulation request ...");
-    std::vector<geometry_msgs::Point> received_points;
-    std::vector<sensor_msgs::PointCloud2> resulting_pcls;
-    sensor_msgs::LaserScan corresponding_laserscan;
-    sensor_msgs::PointCloud corresponding_cloud;
-    sensor_msgs::PointCloud2 corresponding_cloud2;
-    laser_geometry::LaserProjection *projector = new laser_geometry::LaserProjection();
-    received_points = req.distributed_points;
-    double x,y,theta;
-    int nb_configs = req.nb_configurations;
-
-    for (int i = 0; i < received_points.size(); i++)
-    {
-        x = received_points[i].x;
-        y = received_points[i].y;
-        for (int j = 0; j <nb_configs; j++)
-        {
-            theta = 2*j*M_PI/nb_configs;
-
-            corresponding_laserscan = update_scan(x,y,theta);
-            projector->projectLaser(corresponding_laserscan,corresponding_cloud);
-            sensor_msgs::convertPointCloudToPointCloud2(corresponding_cloud,corresponding_cloud2);
-            resulting_pcls.push_back(corresponding_cloud2);
-        }
-    }
-    res.point_clouds = resulting_pcls;
-    ROS_INFO("Return response");
-    return(true);
+    if (is_running) stop();
 }
 
 void LaserScannerSimulator::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& map_msg)
@@ -62,22 +26,10 @@ void LaserScannerSimulator::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr&
     have_map = true;
 }
 
-void LaserScannerSimulator::realScanCallback(const sensor_msgs::LaserScan::ConstPtr& scan_msg)
-{
-    laser_geometry::LaserProjection *projector = new laser_geometry::LaserProjection(); 
-    sensor_msgs::PointCloud cloud;
-    sensor_msgs::PointCloud2 cloud2;
-    projector->projectLaser(*scan_msg,cloud);
-    sensor_msgs::convertPointCloudToPointCloud2(cloud,cloud2);  
-    pcl_pub.publish(cloud2);
-}
-
 
 void LaserScannerSimulator::get_params()
 {
-    nh_ptr->param<std::string>("output_laser_topic", l_scan_topic, "scan");
-    nh_ptr->param<std::string>("input_real_laser_topic", l_real_scan_topic, "scan");
-    nh_ptr->param<std::string>("output_pcl_topic", l_pcl_topic, "/pcl_scan");
+    nh_ptr->param<std::string>("laser_topic", l_scan_topic, "scan");
     nh_ptr->param<std::string>("map_topic", l_map_topic, "map");
     nh_ptr->param<std::string>("map_service", map_service, "static_map");
     //laser parameters - defaults are appriximately that of a Sick S300 
@@ -100,7 +52,83 @@ void LaserScannerSimulator::get_params()
     set_noise_params(use_noise_model, sigma_hit, lambda_short, z_mix[0], z_mix[1], z_mix[2], z_mix[3]);
 }
 
-sensor_msgs::LaserScan LaserScannerSimulator::update_scan(double x, double y, double theta)
+void LaserScannerSimulator::start()
+{
+    loop_timer = nh_ptr->createTimer(ros::Duration(1.0/l_frequency),&LaserScannerSimulator::update_loop, this);
+    loop_timer.start(); // should not be necessary
+    is_running = true;
+    ROS_INFO("Started laser scanner simulator update loop");
+}
+
+void LaserScannerSimulator::stop()
+{
+    loop_timer.stop();
+    is_running = false;
+    ROS_INFO("Stopped laser scanner simulator");
+}
+
+void LaserScannerSimulator::update_loop(const ros::TimerEvent& event)
+{
+    // If we don't have a map, try to get one
+    // if (!have_map) get_map();
+    // first, get the pose of the laser in the map frame
+    double l_x, l_y, l_theta;
+    get_laser_pose(&l_x,&l_y,&l_theta);
+    //ROS_INFO_STREAM_THROTTLE(2,"x: " << l_x << " y: " << l_y << " theta: " <<  l_theta);
+    update_scan(l_x,l_y,l_theta);
+    output_scan.header.stamp = event.current_real;
+    laser_pub.publish(output_scan);
+}
+
+void LaserScannerSimulator::get_map()
+{
+    nav_msgs::GetMapRequest req;
+    nav_msgs::GetMapResponse resp;
+    if (ros::service::call(map_service, req, resp))
+    {
+        map = resp.map;
+        ROS_INFO_STREAM("Got a " << map.info.width << "x" << map.info.height << " map with resolution " << map.info.resolution);
+        have_map = true;
+    }
+    else 
+    {
+        ROS_WARN_THROTTLE(10,"No map received - service '/static_map' not available (will publish only max_range)");
+        have_map = false;
+    }
+}
+
+void LaserScannerSimulator::set_laser_params(std::string frame_id, double fov, unsigned int beam_count, double max_range, double min_range, double update_frequency)
+{
+    l_frame = frame_id;
+    l_fov = fov;
+    l_beams = beam_count;
+    l_max_range = max_range;
+    l_min_range = min_range;
+    l_frequency = update_frequency;
+    ROS_INFO("Updated parameters of simulated laser");
+}
+
+void LaserScannerSimulator::get_laser_pose(double * x, double * y, double * theta)
+{
+    ros::Time now = ros::Time::now();
+    tf::StampedTransform transf;
+    try
+    {
+        tl.waitForTransform(m_frame,l_frame,now,ros::Duration(1.0));
+        tl.lookupTransform(m_frame,l_frame,now,transf);
+    }
+    catch (tf::TransformException ex)
+    {
+        ROS_ERROR("%s",ex.what());
+        *x = 0.0; *y = 0.0, *theta * 0.0;
+        return;
+    }
+    *x = transf.getOrigin().getX();
+    *y = transf.getOrigin().getY();
+    *theta = tf::getYaw(transf.getRotation());
+}
+
+void LaserScannerSimulator::update_scan(double x, double y, double theta)
 {
     //timing
     //ros::Time start = ros::Time::now();
@@ -133,10 +161,7 @@ sensor_msgs::LaserScan LaserScannerSimulator::update_scan(double x, double y, do
         ranges.push_back(this_range);
     }
     output_scan.ranges = ranges;
-    laser_pub.publish(output_scan);
     //ROS_INFO_STREAM_THROTTLE(2, "Simulated scan in " << (ros::Time::now()-start).toSec() << "s");
-
-    return(output_scan);
 }
 
 double LaserScannerSimulator::find_map_range(double x, double y, double theta)

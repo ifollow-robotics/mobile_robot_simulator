@@ -3,22 +3,11 @@
 
 #include "nav_msgs/OccupancyGrid.h"
 #include "nav_msgs/GetMap.h"
-#include <sensor_msgs/LaserScan.h>
-#include <sensor_msgs/PointCloud.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <geometry_msgs/Point.h>
+#include "sensor_msgs/LaserScan.h"
 
 #include "tf/transform_datatypes.h"
 #include <tf/transform_listener.h>
 
-#include <laser_geometry/laser_geometry.h>
-#include <sensor_msgs/point_cloud_conversion.h>
- 
-
-#include "icp_on_particles/ScanSimulation.h"
-
-
-#include <vector>
 #include <math.h>
 #include <random>
 
@@ -30,17 +19,36 @@ class LaserScannerSimulator {
 public:
 
     LaserScannerSimulator(ros::NodeHandle *nh);
-
-    /*! gets parameters from the parameter server */
-    void get_params();
- 
+    ~LaserScannerSimulator();
+    
+    /*! updates the laser scanner parameters */
+    void set_laser_params(std::string frame_id, double fov, unsigned int beam_count, double max_range, double min_range, double l_frequency);
+    
     /*! updates the noise model parameters */
     void set_noise_params(bool use_model, double sigma_hit_reading, double lambda_short_reading, double z_hit, double z_short, double z_max, double z_rand); 
 
+    /*! start the simulation loop */
+    void start(); // 
+    
+    /*! stop everything */
+    void stop();
+
+
 private:
+
+    void update_loop(const ros::TimerEvent& event);
+    
+    /*! gets the current map */
+    void get_map();
+    
+    /*! gets parameters from the parameter server */
+    void get_params();
+    
+    /*! finds the pose of the laser in the map frame */
+    void get_laser_pose(double * x, double * y, double * theta);
     
     /*! updates the laser scan based on current 2D pose of the scanner in map coordinates */
-    sensor_msgs::LaserScan update_scan(double x, double y, double theta);
+    void update_scan(double x, double y, double theta);
     
     /*! raytracing, calculates intersection with the map for a single ray */
     double find_map_range(double x, double y, double theta);
@@ -59,23 +67,12 @@ private:
 
     /*! listen to the desire map topic */
     void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& map_msg);
-
-    /*! listen to the real scan topic */
-    void realScanCallback(const sensor_msgs::LaserScan::ConstPtr& scan_msg);
-
-    /*! listen to the desire map topic */
-    bool ComputeParticleScan(icp_on_particles::ScanSimulation::Request &req, icp_on_particles::ScanSimulation::Response &res);
-
-
     
     
     ros::NodeHandle * nh_ptr;
     ros::Publisher laser_pub; // scan publisher
-    ros::Publisher pcl_pub; // pointcloud publisher (corresponding to the received real scan)
     ros::Subscriber map_sub; // map subscriber
-    ros::Subscriber real_scan_sub; // scan subscriber
     tf::TransformListener tl; 
-    ros::ServiceServer scan_particles_srv;
     
     ros::Timer loop_timer; // timer for the update loop
     bool is_running;
@@ -86,9 +83,7 @@ private:
     bool have_map;
     
     std::string l_scan_topic;
-    std::string l_real_scan_topic;
     std::string l_map_topic;
-    std::string l_pcl_topic;
    
     // laser parameters
     std::string l_frame;
@@ -114,7 +109,6 @@ private:
     
     // output
     sensor_msgs::LaserScan output_scan;
-    sensor_msgs::LaserScan input_real_scan;
 
 }; // end class
 
